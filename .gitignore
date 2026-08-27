@@ -1,0 +1,29 @@
+# --- СЕКРЕТЫ ---
+# Токены и ключи живут только в .env на машине. В репозиторий — никогда.
+.env
+.env.*
+!.env.example
+
+# --- ДАННЫЕ ---
+# Базы весят сотни мегабайт и меняются каждую минуту: в git им не место.
+*.db
+*.db-wal
+*.db-shm
+backups/
+backup_mira_*.db
+knowledge_chunks.csv
+books/
+
+# --- ЛОГИ ---
+bot.log
+bot.log.*
+
+# --- PYTHON ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# --- РЕДАКТОРЫ ---
+.idea/
+.vscode/

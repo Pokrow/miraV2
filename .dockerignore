@@ -1,0 +1,21 @@
+# Данные и секреты не должны попадать в образ: иначе каждая пересборка
+# «откатывает» базу к состоянию сборки, а токены уезжают в слои образа.
+.env
+*.db
+*.db-wal
+*.db-shm
+backup_mira_*.db
+backups/
+knowledge_chunks.csv
+
+# Локальное окружение и мусор сборки
+.venv/
+tests/
+__pycache__/
+*.pyc
+.idea/
+.git/
+.gitignore
+bot.log
+Dockerfile
+.dockerignore
