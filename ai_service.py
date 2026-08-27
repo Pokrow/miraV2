@@ -17,7 +17,7 @@ from io import BytesIO
 from aiogram import Bot
 from aiogram.types import BufferedInputFile, FSInputFile
 from google import genai
-from google.genai import errors
+from google.genai import errors, types
 from PIL import Image
 
 import config
@@ -28,19 +28,43 @@ logger = logging.getLogger("mira_bot")
 processing_users: set[int] = set()
 
 
+def _http_options() -> types.HttpOptions | None:
+    """Настройки транспорта для клиентов Gemini.
+
+    Прокси задаётся явно, а не через переменные окружения: полагаться на то,
+    что httpx их подхватит, нельзя, а на российском сервере без прокси API
+    Google просто недоступно — бот встанет целиком, включая эмбеддинги.
+    """
+    if not config.GEMINI_PROXY_URL:
+        return None
+    proxy_args = {"proxy": config.GEMINI_PROXY_URL}
+    return types.HttpOptions(client_args=proxy_args, async_client_args=proxy_args)
+
+
 class GeminiKeyManager:
     """Менеджер пула API-ключей Gemini с авто-ротацией при исчерпании лимитов."""
 
     def __init__(self, keys: list[str]):
         self.keys = keys
         self.current_idx = 0
+        self._http = _http_options()
+        # Клиенты кэшируются: на каждый запрос их создавалось по новому, а вместе
+        # с ними — новый пул httpx-соединений к Google.
+        self._clients: dict[int, genai.Client] = {}
+        if config.GEMINI_PROXY_URL:
+            logger.info("🌐 [Gemini] Запросы идут через прокси.")
 
     def get_client(self) -> genai.Client:
-        return genai.Client(api_key=self.keys[self.current_idx])
+        return self.get_client_at(self.current_idx)
 
     def get_client_at(self, idx: int) -> genai.Client:
         """Клиент для конкретного индекса ключа, независимо от общего current_idx."""
-        return genai.Client(api_key=self.keys[idx % len(self.keys)])
+        idx %= len(self.keys)
+        if idx not in self._clients:
+            self._clients[idx] = genai.Client(
+                api_key=self.keys[idx], http_options=self._http
+            )
+        return self._clients[idx]
 
     def rotate_key(self) -> str:
         old_idx = self.current_idx
@@ -93,9 +117,23 @@ async def _call_gemini_unguarded(full_prompt: str) -> str:
                 logger.info(f"🤖 [Gemini] Запрос к {model_name} (Ключ #{idx + 1})...")
                 start_t = time.time()
                 response = await client.aio.models.generate_content(
-                    model=model_name, contents=full_prompt
+                    model=model_name,
+                    contents=full_prompt,
+                    # Потолок длины: Telegram обрежет всё сверх 4096 символов,
+                    # а платить за неотправленные токены смысла нет.
+                    config=types.GenerateContentConfig(
+                        max_output_tokens=config.GEMINI_MAX_OUTPUT_TOKENS
+                    ),
                 )
                 elapsed = time.time() - start_t
+                # Пустой text — это не успех: так выглядит срабатывание фильтров
+                # безопасности или обрыв на максимуме токенов. Раньше здесь
+                # падало исключение об отсутствии .strip() у None.
+                if not (response.text or "").strip():
+                    logger.warning(
+                        f"⚠️ Модель {model_name} вернула пустой ответ. Пробуем следующую..."
+                    )
+                    break
                 logger.info(f"✨ [Gemini] Ответ получен за {elapsed:.2f} сек.")
                 return response.text.strip()
             except errors.ServerError as se:

@@ -38,25 +38,27 @@ async def view_user_activity():
                         print("-" * 50)
 
             print("\n" + "=" * 60)
-            print("💬 ПОСЛЕДНИЕ СООБЩЕНИЯ ИЗ ДИАЛОГОВ (user_dialogs)")
+            print("💬 ПОСЛЕДНИЕ ОБРАЩЕНИЯ (request_log)")
             print("=" * 60)
 
-            # 2. Получаем последние 20 сообщений из общей ленты общения
+            # 2. Последние 20 обращений: сюда попадают и отклонённые вопросы,
+            # и свободный текст мимо сценария — раньше это читалось из
+            # user_dialogs, куда никто никогда не писал.
             async with db.execute(
                 """
-                SELECT user_id, role, content, created_at 
-                FROM user_dialogs 
-                ORDER BY id DESC 
+                SELECT user_id, kind, status, question, created_at
+                FROM request_log
+                ORDER BY id DESC
                 LIMIT 20
                 """
             ) as cursor:
                 dialogs = await cursor.fetchall()
 
                 if not dialogs:
-                    print("Сообщений в диалогах пока нет.")
+                    print("Обращений пока нет.")
                 else:
-                    for user_id, role, content, dt in reversed(dialogs):
-                        print(f"[{dt}] User {user_id} ({role}):\n{content}\n")
+                    for user_id, kind, status, content, dt in reversed(dialogs):
+                        print(f"[{dt}] User {user_id} ({kind} · {status}):\n{content}\n")
 
     except FileNotFoundError:
         print(f"❌ Файл базы данных {DB_NAME} не найден. Сначала запусти бота, чтобы создать базу.")

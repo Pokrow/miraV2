@@ -1,6 +1,8 @@
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+import config
+
 def get_main_keyboard():
     builder = ReplyKeyboardBuilder()
     builder.button(text="🃏 Карта дня")
@@ -35,13 +37,24 @@ def get_profile_inline_keyboard(reminder_on: bool = False) -> InlineKeyboardMark
 
 
 def get_gender_inline_keyboard() -> InlineKeyboardMarkup:
-    """Без явного выбора модель на русском по умолчанию говорит в женском роде."""
+    """Без явного выбора модель на русском по умолчанию говорит в женском роде.
+
+    Предлагаются только мужской и женский род. Нейтральное обращение осталось
+    поведением по умолчанию — для тех, кто ничего не выбрал, — но отдельной
+    кнопкой не навязывается.
+    """
     builder = InlineKeyboardBuilder()
     builder.button(text="♂️ Мужской род", callback_data="set_gender_m")
     builder.button(text="♀️ Женский род", callback_data="set_gender_f")
-    builder.button(text="✨ Нейтрально", callback_data="set_gender_x")
-    builder.adjust(2, 1)
+    builder.adjust(2)
     return builder.as_markup()
+
+def get_skip_birthdate_keyboard() -> InlineKeyboardMarkup:
+    """Анкета на входе необязательна — иначе часть людей уходит, не начав."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⏭ Пропустить", callback_data="skip_birthdate")
+    return builder.as_markup()
+
 
 def get_cancel_inline_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -105,11 +118,24 @@ def get_topup_keyboard(packages: list[dict], show_rub: bool) -> InlineKeyboardMa
     return builder.as_markup()
 
 
+def _support_button(builder: InlineKeyboardBuilder) -> None:
+    """Кнопка поддержки. Без контакта в конфиге не показывается вовсе —
+    мёртвая кнопка хуже её отсутствия."""
+    contact = config.SUPPORT_CONTACT
+    if not contact:
+        return
+    if contact.startswith("http"):
+        builder.button(text="✉️ Написать в поддержку", url=contact)
+    else:
+        builder.button(text="✉️ Написать в поддержку", url=f"https://t.me/{contact.lstrip('@')}")
+
+
 def get_low_balance_keyboard() -> InlineKeyboardMarkup:
     """Показывается, когда свечей не хватает на запрос."""
     builder = InlineKeyboardBuilder()
     builder.button(text="🕯️ Пополнить баланс", callback_data="show_topup")
     builder.button(text="🎁 Пригласить друга — свечи в подарок", callback_data="referral_info")
+    _support_button(builder)
     builder.adjust(1)
     return builder.as_markup()
 
@@ -119,6 +145,7 @@ def get_balance_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="🕯️ Пополнить баланс", callback_data="show_topup")
     builder.button(text="📖 История списаний", callback_data="show_history_tx")
     builder.button(text="🎁 Пригласить друга", callback_data="referral_info")
+    _support_button(builder)
     builder.adjust(1)
     return builder.as_markup()
 

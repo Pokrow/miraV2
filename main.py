@@ -6,6 +6,7 @@
 import asyncio
 import logging
 import signal
+import sys
 
 from aiogram.types import BotCommand
 
@@ -14,6 +15,7 @@ import database as db
 import handlers
 import tasks
 from bot_core import ThrottlingMiddleware, bot, dp
+from single_instance import AlreadyRunning, SingleInstance
 
 logger = logging.getLogger("mira_bot")
 
@@ -99,6 +101,12 @@ def _request_stop(signum, _frame) -> None:
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _request_stop)
     try:
-        asyncio.run(main())
+        # Замок берётся до всего остального: второй экземпляр не должен успеть
+        # ни забрать апдейт, ни списать свечи.
+        with SingleInstance(config.LOCK_FILE):
+            asyncio.run(main())
+    except AlreadyRunning as e:
+        logger.error(f"⛔ {e}")
+        sys.exit(1)
     except KeyboardInterrupt:
         logger.info("👋 Мира остановлена.")

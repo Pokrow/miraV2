@@ -18,7 +18,7 @@ import config
 import database as db
 import keyboards as kb
 from bot_core import UserState, bot
-from utils import delete_prompt_msg
+from utils import answer_long, delete_prompt_msg
 
 logger = logging.getLogger("mira_bot")
 router = Router(name="spreads")
@@ -299,7 +299,9 @@ async def process_tarot_spread(message: Message, state: FSMContext):
         try:
             moon_text = f"Лунный цикл: {ai.get_moon_phase()}." if cfg["count"] == 1 else ""
             dup_text = "Клиент перефразировал вопрос за сегодня. Карты те же. Раскрой ответ глубже и с новой стороны." if duplicate_spread else ""
-            user_arcana = await db.get_user_arcana(user_id)
+            # Дата рождения теперь необязательна: без неё аркана нет, и в промпт
+            # должно уходить честное «не указан», а не None.
+            user_arcana = await db.get_user_arcana(user_id) or "не указан"
             gender_line = db.gender_hint(await db.get_user_gender(user_id))
 
             # Вектор для поиска по книгам строится из вопроса ВМЕСТЕ с названиями
@@ -368,11 +370,9 @@ async def process_tarot_spread(message: Message, state: FSMContext):
                     pass  # пригласивший мог заблокировать бота
 
             await temp_msg.delete()
-            try:
-                await message.answer(formatted_answer, reply_markup=kb.get_clarify_inline_keyboard(saved_id))
-            except TelegramBadRequest:
-                await message.answer(re.sub(r"<[^>]+>", "", formatted_answer),
-                                     reply_markup=kb.get_clarify_inline_keyboard(saved_id))
+            await answer_long(
+                message, formatted_answer, reply_markup=kb.get_clarify_inline_keyboard(saved_id)
+            )
 
         except Exception as e:
             logger.error(f"Ошибка генерации ответа: {e}", exc_info=True)
@@ -455,7 +455,7 @@ async def process_clarification(message: Message, state: FSMContext):
         temp_msg = await message.answer("<i>Мира собирает нити твоих мыслей... 🕯️✨</i>")
 
         try:
-            user_arcana = await db.get_user_arcana(user_id)
+            user_arcana = await db.get_user_arcana(user_id) or "не указан"
             gender_line = db.gender_hint(await db.get_user_gender(user_id))
             prompt = (
                 f"{config.MIRA_SYSTEM_PROMPT}\n{gender_line}\nАркан Рождения: {user_arcana}\n{context}\n"
@@ -469,10 +469,7 @@ async def process_clarification(message: Message, state: FSMContext):
                 raw_answer) + "\n\n<i>🕯️ Это было твоё бесплатное уточнение по раскладу. Когда почувствуешь готовность исследовать новую тему, выбери нужное действие в меню ниже 👇</i>"
 
             await temp_msg.delete()
-            try:
-                await message.answer(final_text, reply_markup=kb.get_main_keyboard())
-            except TelegramBadRequest:
-                await message.answer(re.sub(r"<[^>]+>", "", final_text), reply_markup=kb.get_main_keyboard())
+            await answer_long(message, final_text, reply_markup=kb.get_main_keyboard())
 
             # Лимит расходуется только за доставленный ответ.
             if spread_id:

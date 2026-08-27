@@ -11,6 +11,7 @@ import glob
 import logging
 import os
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import FSInputFile
@@ -26,14 +27,35 @@ logger = logging.getLogger("mira_bot")
 MAX_UPLOAD_MB = 45
 
 
+def _tz() -> ZoneInfo | None:
+    """Часовой пояс расписаний. None — считаем по системному времени.
+
+    Явный пояс важен: в контейнере системное время почти всегда UTC, и
+    напоминание, задуманное на 11 утра, уходило бы в два часа дня.
+    """
+    try:
+        return ZoneInfo(config.TIMEZONE)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        logger.warning(
+            f"⚠️ Часовой пояс {config.TIMEZONE!r} не найден (нет пакета tzdata?). "
+            f"Расписания идут по системному времени."
+        )
+        return None
+
+
 async def _sleep_until(hour: int, what: str) -> None:
-    """Спит до ближайшего наступления указанного часа по времени сервера."""
-    now = datetime.now()
+    """Спит до ближайшего наступления указанного часа в заданном поясе."""
+    tz = _tz()
+    now = datetime.now(tz)
     target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
     if target <= now:
         target += timedelta(days=1)
     delay = (target - now).total_seconds()
-    logger.info(f"⏰ [{what}] Следующий запуск {target:%d.%m в %H:%M} (через {delay / 3600:.1f} ч).")
+    zone = config.TIMEZONE if tz else "время сервера"
+    logger.info(
+        f"⏰ [{what}] Следующий запуск {target:%d.%m в %H:%M} ({zone}), "
+        f"через {delay / 3600:.1f} ч."
+    )
     await asyncio.sleep(delay)
 
 
@@ -60,6 +82,11 @@ async def run_backup(notify: bool = True) -> str:
     os.makedirs(config.BACKUP_DIR, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
     path = os.path.join(config.BACKUP_DIR, f"backup_mira_{stamp}.db")
+
+    # Чистим шум в журнале перед копированием — незачем тащить его в бэкап.
+    purged = await db.purge_old_requests()
+    if purged:
+        logger.info(f"🧹 [Журнал] Удалено старых служебных записей: {purged}.")
 
     counts = await asyncio.to_thread(db.create_backup_sync, path, False)
     size_mb = counts.pop("_bytes") / 1024 / 1024

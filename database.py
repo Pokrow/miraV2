@@ -1,4 +1,5 @@
 import aiosqlite
+import hashlib
 import json
 import logging
 import os
@@ -30,8 +31,10 @@ async def init_db() -> None:
 
     await db_conn.execute(
         "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, birth_date TEXT, birth_arcana TEXT, last_spread TEXT);")
-    await db_conn.execute(
-        "CREATE TABLE IF NOT EXISTS user_dialogs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+    # Таблицы user_dialogs здесь больше нет: её создавали, бэкапили и читали
+    # скриптом, но не писал в неё никто. Роль журнала общения выполняет
+    # request_log. Уже существующие базы не трогаем — старые данные (если они
+    # где-то есть) остаются на месте.
     await db_conn.execute(
         "CREATE TABLE IF NOT EXISTS user_limits (user_id INTEGER PRIMARY KEY, last_card_date TEXT, last_spread_date TEXT);")
     await db_conn.execute("CREATE TABLE IF NOT EXISTS photo_cache (file_name TEXT PRIMARY KEY, file_id TEXT NOT NULL);")
@@ -88,6 +91,8 @@ async def init_db() -> None:
         # Напоминание о бесплатной карте дня — строго по согласию.
         "ALTER TABLE users ADD COLUMN daily_reminder INTEGER DEFAULT 0;",
         "ALTER TABLE users ADD COLUMN last_reminded TEXT;",
+        # @username: в спорной ситуации у администратора есть он, а не ID.
+        "ALTER TABLE users ADD COLUMN username TEXT;",
     ):
         try:
             await db_conn.execute(migration)
@@ -185,12 +190,48 @@ async def init_db() -> None:
     await db_conn.commit()
     await _seed_defaults()
 
+    await _validate_photo_cache()
+
     async with db_conn.execute("SELECT file_name, file_id FROM photo_cache") as cursor:
         for r in await cursor.fetchall():
             PHOTO_CACHE[r[0]] = r[1]
     logger.info(f"📸 Загружено {len(PHOTO_CACHE)} кэшированных фото карт из БД.")
 
     await _load_knowledge_cache()
+
+
+async def _validate_photo_cache() -> None:
+    """Сбрасывает кэш картинок, если сменился токен бота.
+
+    file_id в Telegram действительны только для того бота, который их получил.
+    После смены токена весь кэш протухает разом, и карты перестают отправляться
+    с невнятной ошибкой — вместо этого просто перезальём их заново.
+    """
+    fingerprint = hashlib.sha256(config.TELEGRAM_BOT_TOKEN.encode()).hexdigest()[:16]
+
+    async with db_conn.execute(
+        "SELECT value FROM settings WHERE key = 'bot_token_fingerprint'"
+    ) as cursor:
+        row = await cursor.fetchone()
+    known = row[0] if row else None
+
+    if known == fingerprint:
+        return
+
+    if known:
+        cursor = await db_conn.execute("DELETE FROM photo_cache")
+        logger.warning(
+            f"🔑 Токен бота изменился — кэш из {cursor.rowcount} картинок сброшен, "
+            f"карты зальются заново."
+        )
+        PHOTO_CACHE.clear()
+
+    await db_conn.execute(
+        """INSERT INTO settings (key, value) VALUES ('bot_token_fingerprint', ?)
+           ON CONFLICT(key) DO UPDATE SET value = ?""",
+        (fingerprint, fingerprint),
+    )
+    await db_conn.commit()
 
 
 async def _backfill_request_log() -> None:
@@ -512,6 +553,26 @@ async def get_requests_page(
         ]
 
 
+async def purge_old_requests() -> int:
+    """Удаляет старый шум из журнала: отклонённые вопросы и текст мимо сценария.
+
+    Состоявшиеся расклады (status='ok') не трогаются никогда — это история
+    консультаций, и она нужна и человеку, и в разборе спорных ситуаций.
+    """
+    days = config.REQUEST_LOG_RETENTION_DAYS
+    if days <= 0:
+        return 0
+    cursor = await db_conn.execute(
+        """DELETE FROM request_log
+           WHERE status != 'ok'
+             AND spread_id IS NULL
+             AND created_at < datetime('now', ?)""",
+        (f"-{days} days",),
+    )
+    await db_conn.commit()
+    return cursor.rowcount or 0
+
+
 async def get_request_by_id(request_id: int) -> dict | None:
     async with db_conn.execute(
         """SELECT id, user_id, kind, question, status, note, spread_id, created_at
@@ -642,6 +703,28 @@ async def get_all_user_ids() -> list[int]:
         return [r[0] for r in await cursor.fetchall()]
 
 
+async def remember_username(user_id: int, username: str) -> None:
+    """Запоминает @username, чтобы админ мог начислять свечи не только по ID."""
+    await db_conn.execute(
+        """INSERT INTO users (user_id, username) VALUES (?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET username = ?""",
+        (user_id, username, username),
+    )
+    await db_conn.commit()
+
+
+async def find_user_by_username(username: str) -> int | None:
+    """Ищет пользователя по @username без учёта регистра."""
+    clean = username.lstrip("@").strip().lower()
+    if not clean:
+        return None
+    async with db_conn.execute(
+        "SELECT user_id FROM users WHERE LOWER(username) = ?", (clean,)
+    ) as cursor:
+        row = await cursor.fetchone()
+    return row[0] if row else None
+
+
 async def mark_blocked(user_id: int, blocked: bool = True) -> None:
     """Отмечает, что бот заблокирован пользователем (или снова разблокирован).
 
@@ -718,7 +801,6 @@ async def mark_reminded(user_id: int) -> None:
 BACKUP_TABLES = (
     "users",
     "user_limits",
-    "user_dialogs",
     "photo_cache",
     "spread_history",
     "request_log",

@@ -1,0 +1,27 @@
+# Запуск:  docker compose up -d --build
+# Логи:    docker compose logs -f
+# Остановка: docker compose stop   (мягкая — бот закроет базу и сбросит WAL)
+
+services:
+  mira:
+    build: .
+    container_name: mira-bot
+    # Контейнер поднимается сам после падения и после перезагрузки сервера.
+    # Без этого упавший бот лежит до тех пор, пока кто-то не заметит.
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Расписания считаются по этому поясу, а не по времени сервера.
+      TZ: ${TZ:-Europe/Moscow}
+    volumes:
+      # Всё изменяемое — базы, бэкапы, логи, файл-замок — живёт здесь и
+      # переживает пересборку образа.
+      - ./data:/app/data
+    # Бот сам закрывает базу по SIGTERM; даём ему на это время.
+    stop_grace_period: 30s
+    logging:
+      # Иначе json-лог Docker растёт до заполнения диска.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

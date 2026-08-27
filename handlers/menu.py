@@ -13,7 +13,7 @@ import config
 import database as db
 import keyboards as kb
 from bot_core import UserState
-from utils import delete_prompt_msg
+from utils import _esc, answer_long, delete_prompt_msg
 
 logger = logging.getLogger("mira_bot")
 router = Router(name="menu")
@@ -114,15 +114,19 @@ async def view_history_item(callback: CallbackQuery):
     spread_id = int(callback.data.replace("view_history_", ""))
     record = await db.get_spread_by_id(spread_id)
     if not record: return await callback.message.answer("Расклад не найден 🕯️")
-    text = (f"📜 <b>{record['spread_type']}</b>\n📅 <i>{record['created_at'][:16]}</i>\n"
-            f"❓ <b>Вопрос:</b> {record['question']}\n\n🃏 <b>Карты:</b>\n{record['cards_text']}\n\n{record['answer_text']}")
+    # Вопрос экранируется: он хранится сырым, и «почему <он> молчит» ломало
+    # разметку так, что запись дневника не открывалась вообще.
+    text = (f"📜 <b>{_esc(record['spread_type'])}</b>\n📅 <i>{record['created_at'][:16]}</i>\n"
+            f"❓ <b>Вопрос:</b> {_esc(record['question'])}\n\n"
+            f"🃏 <b>Карты:</b>\n{_esc(record['cards_text'])}\n\n{record['answer_text']}")
     # Уточнение — одно на расклад: если оно уже было, кнопку не показываем.
     if await db.clarification_available(spread_id):
         markup = kb.get_clarify_inline_keyboard(spread_id)
     else:
         text += "\n\n<i>💬 Уточнение по этому раскладу уже было.</i>"
         markup = kb.get_after_spread_keyboard()
-    await callback.message.answer(text, reply_markup=markup)
+    # Вопрос, карты и полный ответ в одном сообщении легко перебирают лимит.
+    await answer_long(callback.message, text, reply_markup=markup)
 
 
 @router.callback_query(F.data.startswith("clarify_spread_"))
@@ -182,11 +186,32 @@ async def cmd_start(message: Message, state: FSMContext):
             f"Баланс: <b>{balance}</b> 🕯️\n\nО чем хочешь спросить карты сегодня?",
             reply_markup=kb.get_main_keyboard())
     else:
+        # Анкета необязательна: раньше дата рождения стояла глухой стеной перед
+        # первым раскладом — самый дорогой шаг воронки до того, как человек
+        # вообще увидел, чем бот полезен. Аркан рождения лишь уточняет трактовку.
         prompt_msg = await message.answer(
-            "Привет 🤍 Я Мира.\n\nПрежде чем мы начнем, мне нужно почувствовать твою энергию. Напиши свою дату рождения в формате ДД.ММ.ГГГГ (например, 17.05.1990). Я рассчитаю твой Аркан по праву рождения ✨",
-            reply_markup=ReplyKeyboardRemove())
+            "Привет 🤍 Я Мира.\n\nЧтобы точнее чувствовать тебя, напиши свою дату рождения "
+            "в формате ДД.ММ.ГГГГ (например, 17.05.1990) — я рассчитаю твой Аркан по праву рождения ✨\n\n"
+            "<i>Можно и пропустить: расклады работают и без неё, а дату всегда получится "
+            "указать позже в профиле.</i>",
+            reply_markup=kb.get_skip_birthdate_keyboard())
         await state.set_state(UserState.waiting_for_birthdate)
         await state.update_data(prompt_msg_id=prompt_msg.message_id)
+
+
+@router.callback_query(F.data == "skip_birthdate")
+async def skip_birthdate(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.clear()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer(
+        "Хорошо, обойдёмся без даты 🕯️ Выбирай, с чего начнём — "
+        "первая «Карта дня» сегодня бесплатна.\n\n"
+        "<i>Дату рождения можно указать когда захочешь: «🌌 Мой профиль».</i>",
+        reply_markup=kb.get_main_keyboard())
 
 
 @router.message(Command("help"))
@@ -211,7 +236,9 @@ async def cmd_help(message: Message, state: FSMContext):
         f"   • свечи за друга, пришедшего по твоей ссылке\n\n"
         f"🔔 В профиле можно включить напоминание о бесплатной карте дня — "
         f"без него я не пишу первой.\n\n"
-        f"<i>Команды: /start — начать заново, /help — эта справка.</i>",
+        + (f"✉️ Вопрос по оплате или что-то пошло не так: {config.SUPPORT_CONTACT}\n\n"
+           if config.SUPPORT_CONTACT else "")
+        + f"<i>Команды: /start — начать заново, /help — эта справка.</i>",
         reply_markup=kb.get_main_keyboard())
 
 

@@ -509,14 +509,28 @@ async def cmd_give(message: Message):
         return
 
     parts = (message.text or "").split(maxsplit=3)
-    if len(parts) < 3 or not parts[1].isdigit() or not parts[2].lstrip("-").isdigit():
+    if len(parts) < 3 or not parts[2].lstrip("-").isdigit():
         return await message.answer(
-            "Формат: <code>/give ID количество [причина]</code>\n"
+            "Формат: <code>/give ID_или_@username количество [причина]</code>\n"
             "Отрицательное количество — списание.\n"
             "Например: <code>/give 123456 50 компенсация</code>"
         )
 
-    target_id, amount = int(parts[1]), int(parts[2])
+    # В спорной ситуации у администратора обычно есть @username, а не числовой
+    # ID. Ищем его среди тех, кто уже писал боту.
+    target_raw = parts[1]
+    if target_raw.isdigit():
+        target_id = int(target_raw)
+    else:
+        target_id = await db.find_user_by_username(target_raw)
+        if not target_id:
+            return await message.answer(
+                f"❌ Не нашла <code>{_esc(target_raw)}</code> среди пользователей.\n"
+                f"<i>Username запоминается, когда человек пишет боту. "
+                f"Если его нет — начисляй по числовому ID.</i>"
+            )
+
+    amount = int(parts[2])
     reason = parts[3] if len(parts) > 3 else "Начисление администратором"
 
     if amount >= 0:
@@ -652,14 +666,21 @@ async def admin_backup(callback: CallbackQuery):
     await callback.answer()
 
     status = await callback.message.answer("💾 Готовлю выгрузку пользовательских данных...")
+    # Тот же каталог, что и у ежедневного бэкапа: на сервере это том с данными,
+    # а не рабочая папка контейнера.
+    os.makedirs(config.BACKUP_DIR, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
-    path = f"backup_mira_{stamp}.db"
+    path = os.path.join(config.BACKUP_DIR, f"backup_mira_{stamp}.db")
+    keep_file = False
 
     try:
         counts = await asyncio.to_thread(db.create_backup_sync, path, False)
         size_mb = counts.pop("_bytes") / 1024 / 1024
 
         if size_mb > 45:
+            # Файл остаётся на диске — иначе сообщение ниже врало бы: в finally
+            # он удалялся сразу после того, как админу сказали, где его искать.
+            keep_file = True
             await status.edit_text(
                 f"⚠️ Бэкап получился {size_mb:.1f} МБ — Telegram не примет файл больше 50 МБ.\n"
                 f"Файл сохранён на сервере: <code>{_esc(path)}</code>",
@@ -685,9 +706,11 @@ async def admin_backup(callback: CallbackQuery):
             reply_markup=kb.get_admin_back_keyboard(),
         )
     finally:
-        # Файл уже отправлен в Telegram — на диске он не нужен.
-        try:
-            if os.path.exists(path):
-                os.remove(path)
-        except OSError:
-            pass
+        # Файл уже отправлен в Telegram — на диске он не нужен. Исключение:
+        # слишком большой бэкап, который забрать можно только с сервера.
+        if not keep_file:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass

@@ -5,6 +5,7 @@
 """
 
 import logging
+import os
 import socket
 import time
 from logging.handlers import RotatingFileHandler
@@ -19,6 +20,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 import config
+import database as db
 
 try:
     from aiohttp_socks import ProxyConnector
@@ -35,7 +37,14 @@ if not logger.handlers:
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    file_handler = RotatingFileHandler("bot.log", maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    # Путь берётся из конфига: в контейнере лог должен лежать на томе, иначе
+    # история исчезает при каждом пересоздании контейнера.
+    log_dir = os.path.dirname(config.LOG_FILE)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+    file_handler = RotatingFileHandler(
+        config.LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
@@ -83,6 +92,20 @@ class ThrottlingMiddleware(BaseMiddleware):
         self.callback_limit = callback_limit
         self.user_timestamps: dict[int, float] = {}
         self.callback_timestamps: dict[int, float] = {}
+        # Последний известный @username. Запись в базу идёт только при
+        # изменении: писать на каждое сообщение — лишний запрос на ровном месте.
+        self.known_usernames: dict[int, str] = {}
+
+    async def _remember_username(self, user) -> None:
+        if not user.username or self.known_usernames.get(user.id) == user.username:
+            return
+        if len(self.known_usernames) > 5000:
+            self.known_usernames.clear()
+        self.known_usernames[user.id] = user.username
+        try:
+            await db.remember_username(user.id, user.username)
+        except Exception as e:  # база не должна ронять обработку сообщения
+            logger.warning(f"⚠️ Не удалось сохранить @{user.username}: {e}")
 
     @staticmethod
     def _hit(store: dict[int, float], user_id: int, limit: float) -> bool:
@@ -103,6 +126,7 @@ class ThrottlingMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
         user_id = user.id
+        await self._remember_username(user)
 
         # Безлимит по скорости для администратора
         if user_id == config.ADMIN_ID and config.ADMIN_ID != 0:
