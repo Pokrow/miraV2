@@ -4,11 +4,9 @@ import asyncio
 import json
 import logging
 import random
-import re
 from datetime import datetime
 
-from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram import Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from aiogram.utils.media_group import MediaGroupBuilder
